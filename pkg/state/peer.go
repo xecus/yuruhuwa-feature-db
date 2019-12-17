@@ -1,37 +1,52 @@
-package main
+package state
 
 import (
 	"log"
-
 	"bytes"
 	"encoding/gob"
 
+	"github.com/abeja-inc/feature-search-db/pkg/brick"
 	"github.com/weaveworks/mesh"
 )
 
-// Peer encapsulates state and implements mesh.Gossiper.
+// Peer encapsulates State and implements mesh.Gossiper.
 // It should be passed to mesh.Router.NewGossip,
 // and the resulting Gossip registered in turn,
 // before calling mesh.Router.Start.
-type peer struct {
-	st      *state
+type Peer struct {
+	st      *State
 	send    mesh.Gossip
 	actions chan<- func()
 	quit    chan struct{}
 	logger  *log.Logger
 }
 
-// peer implements mesh.Gossiper.
-var _ mesh.Gossiper = &peer{}
+type PeerConfig struct {
+	ipAddress string
+	featureApiHttpListen string
+}
 
-// Construct a peer with empty state.
-// Be sure to register a channel, later,
+func NewPeerConfig(
+	ipAddress string,
+	featureApiHttpListen string,
+	)PeerConfig{
+	return PeerConfig{
+		ipAddress:            ipAddress,
+		featureApiHttpListen: featureApiHttpListen,
+	}
+}
+
+// peer implements mesh.Gossiper.
+var _ mesh.Gossiper = &Peer{}
+
+// Construct a peer with empty State.
+// Be sure to Register a channel, later,
 // so we can make outbound communication.
-func newPeer(self mesh.PeerName, logger *log.Logger) *peer {
+func NewPeer(self mesh.PeerName, logger *log.Logger) *Peer {
 	actions := make(chan func())
-	p := &peer{
+	p := &Peer{
 		st:      newState(self),
-		send:    nil, // must .register() later
+		send:    nil, // must .Register() later
 		actions: actions,
 		quit:    make(chan struct{}),
 		logger:  logger,
@@ -40,7 +55,7 @@ func newPeer(self mesh.PeerName, logger *log.Logger) *peer {
 	return p
 }
 
-func (p *peer) loop(actions <-chan func()) {
+func (p *Peer) loop(actions <-chan func()) {
 	for {
 		select {
 		case f := <-actions:
@@ -51,17 +66,17 @@ func (p *peer) loop(actions <-chan func()) {
 	}
 }
 
-// register the result of a mesh.Router.NewGossip.
-func (p *peer) register(send mesh.Gossip) {
+// Register the result of a mesh.Router.NewGossip.
+func (p *Peer) Register(send mesh.Gossip) {
 	p.actions <- func() { p.send = send }
 }
 
 // Return the current value of the counter.
-func (p *peer) getAllState() StateContent {
+func (p *Peer) GetAllState() StateContent {
 	return p.st.getAllState()
 }
 
-func (p *peer) del() (result StateContent) {
+func (p *Peer) Del() (result StateContent) {
 	c := make(chan struct{})
 	p.actions <- func() {
 		defer close(c)
@@ -77,11 +92,11 @@ func (p *peer) del() (result StateContent) {
 	return result
 }
 
-func (p *peer) setNodeInfo(cci *ClusterConfigInfo, bp *BrickPool) (result StateContent) {
+func (p *Peer) SetNodeInfo(peerConf PeerConfig, bp *brick.BrickPool) (result StateContent) {
 	c := make(chan struct{})
 	p.actions <- func() {
 		defer close(c)
-		st := p.st.setNodeInfo(cci, bp)
+		st := p.st.setNodeInfo(peerConf, bp)
 		if p.send != nil {
 			p.send.GossipBroadcast(st)
 		} else {
@@ -93,20 +108,20 @@ func (p *peer) setNodeInfo(cci *ClusterConfigInfo, bp *BrickPool) (result StateC
 	return result
 }
 
-func (p *peer) stop() {
+func (p *Peer) stop() {
 	close(p.quit)
 }
 
-// Return a copy of our complete state.
-func (p *peer) Gossip() (complete mesh.GossipData) {
+// Return a copy of our complete State.
+func (p *Peer) Gossip() (complete mesh.GossipData) {
 	complete = p.st.copy()
-	p.logger.Printf("Gossip => complete %v", complete.(*state).set)
+	p.logger.Printf("Gossip => complete %v", complete.(*State).set)
 	return complete
 }
 
-// Merge the gossiped data represented by buf into our state.
-// Return the state information that was modified.
-func (p *peer) OnGossip(buf []byte) (delta mesh.GossipData, err error) {
+// Merge the gossiped data represented by buf into our State.
+// Return the State information that was modified.
+func (p *Peer) OnGossip(buf []byte) (delta mesh.GossipData, err error) {
 	var set map[mesh.PeerName]StateContent
 	if err := gob.NewDecoder(bytes.NewReader(buf)).Decode(&set); err != nil {
 		return nil, err
@@ -116,14 +131,14 @@ func (p *peer) OnGossip(buf []byte) (delta mesh.GossipData, err error) {
 	if delta == nil {
 		p.logger.Printf("OnGossip %v => delta %v", set, delta)
 	} else {
-		p.logger.Printf("OnGossip %v => delta %v", set, delta.(*state).set)
+		p.logger.Printf("OnGossip %v => delta %v", set, delta.(*State).set)
 	}
 	return delta, nil
 }
 
-// Merge the gossiped data represented by buf into our state.
-// Return the state information that was modified.
-func (p *peer) OnGossipBroadcast(src mesh.PeerName, buf []byte) (received mesh.GossipData, err error) {
+// Merge the gossiped data represented by buf into our State.
+// Return the State information that was modified.
+func (p *Peer) OnGossipBroadcast(src mesh.PeerName, buf []byte) (received mesh.GossipData, err error) {
 	var set map[mesh.PeerName]StateContent
 	if err := gob.NewDecoder(bytes.NewReader(buf)).Decode(&set); err != nil {
 		return nil, err
@@ -133,13 +148,13 @@ func (p *peer) OnGossipBroadcast(src mesh.PeerName, buf []byte) (received mesh.G
 	if received == nil {
 		p.logger.Printf("OnGossipBroadcast %s %v => delta %v", src, set, received)
 	} else {
-		p.logger.Printf("OnGossipBroadcast %s %v => delta %v", src, set, received.(*state).set)
+		p.logger.Printf("OnGossipBroadcast %s %v => delta %v", src, set, received.(*State).set)
 	}
 	return received, nil
 }
 
-// Merge the gossiped data represented by buf into our state.
-func (p *peer) OnGossipUnicast(src mesh.PeerName, buf []byte) error {
+// Merge the gossiped data represented by buf into our State.
+func (p *Peer) OnGossipUnicast(src mesh.PeerName, buf []byte) error {
 	var set map[mesh.PeerName]StateContent
 	if err := gob.NewDecoder(bytes.NewReader(buf)).Decode(&set); err != nil {
 		return err

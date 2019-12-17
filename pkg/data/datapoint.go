@@ -1,9 +1,18 @@
-package main
+package data
 
 import (
-	"github.com/rs/xid"
 	"math"
+	"time"
+
+	"github.com/rs/xid"
 )
+
+type DataPoint struct {
+	DataID    DataID
+	Available bool
+	PosVector PosVector
+	CreatedAt time.Time
+}
 
 func (dp *DataPoint) GetDataIDstr() string {
 	return xid.ID(dp.DataID).String()

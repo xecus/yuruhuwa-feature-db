@@ -1,15 +1,19 @@
-package main
+package brick
 
 import (
 	"bytes"
 	"encoding/gob"
-	"errors"
-	"github.com/rs/xid"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"errors"
+
+	"github.com/abeja-inc/feature-search-db/pkg/calculation"
+	"github.com/abeja-inc/feature-search-db/pkg/data"
+
+	"github.com/rs/xid"
 )
 
 type BrickID xid.ID
@@ -21,8 +25,8 @@ type FeatureBrick struct {
 	FeatureGroupID       BrickFeatureGroupID
 	NumOfBrickTotalCap   int
 	NumOfAvailablePoints int
-	DataPoints           []DataPoint
-	DataPointMapper      map[DataID]*DataPoint
+	DataPoints           []data.DataPoint
+	DataPointMapper      map[data.DataID]*data.DataPoint
 	mutex                *sync.Mutex
 }
 
@@ -32,23 +36,23 @@ func (fp *FeatureBrick) InitBrick(numOfTotalCap int, featureGroupID BrickFeature
 	fp.FeatureGroupID = featureGroupID
 	fp.NumOfBrickTotalCap = numOfTotalCap
 	fp.NumOfAvailablePoints = 0
-	fp.DataPoints = make([]DataPoint, numOfTotalCap, numOfTotalCap)
+	fp.DataPoints = make([]data.DataPoint, numOfTotalCap, numOfTotalCap)
 	for i, _ := range fp.DataPoints {
 		fp.DataPoints[i].Available = false
 		fp.DataPoints[i].PosVector.InitVector(false, 512)
 	}
-	fp.DataPointMapper = map[DataID]*DataPoint{}
+	fp.DataPointMapper = map[data.DataID]*data.DataPoint{}
 	var mutex sync.Mutex
 	fp.mutex = &mutex
 	return nil
 }
 
-func (fp *FeatureBrick) FindDataPointByDataIDstr(dataIDstr string) (*DataPoint, error) {
+func (fp *FeatureBrick) FindDataPointByDataIDstr(dataIDstr string) (*data.DataPoint, error) {
 	dataID, err := xid.FromString(dataIDstr)
 	if err != nil {
 		return nil, nil
 	}
-	return fp.DataPointMapper[DataID(dataID)], nil
+	return fp.DataPointMapper[data.DataID(dataID)], nil
 }
 
 func (fp *FeatureBrick) GetUniqueIDstr() string {
@@ -78,15 +82,15 @@ func (fp *FeatureBrick) ShowDebug() {
 	log.Printf("cap(fp.DataPoints)=%d\n", cap(fp.DataPoints))
 }
 
-func (fp *FeatureBrick) AddNewDataPoint(pv *PosVector) (*DataPoint, error) {
+func (fp *FeatureBrick) AddNewDataPoint(pv *data.PosVector) (*data.DataPoint, error) {
 	fp.mutex.Lock()
 	defer fp.mutex.Unlock()
-	var newDataPoint *DataPoint
+	var newDataPoint *data.DataPoint
 	if fp.NumOfAvailablePoints == fp.NumOfBrickTotalCap {
 		return nil, errors.New("This Pool is full.")
 	}
 	newDataPoint = &fp.DataPoints[fp.NumOfAvailablePoints]
-	newDataPoint.DataID = DataID(xid.New())
+	newDataPoint.DataID = data.DataID(xid.New())
 	newDataPoint.Available = true
 	newDataPoint.PosVector.LoadPosition(pv)
 	newDataPoint.CreatedAt = time.Now()
@@ -95,7 +99,7 @@ func (fp *FeatureBrick) AddNewDataPoint(pv *PosVector) (*DataPoint, error) {
 	return newDataPoint, nil
 }
 
-func (fp *FeatureBrick) FindSimilarDataPoint(pv *PosVector, method string) (*DistanceComparingState, error) {
+func (fp *FeatureBrick) FindSimilarDataPoint(pv *data.PosVector, method string) (*calculation.DistanceComparingState, error) {
 	if fp.NumOfAvailablePoints == 0 {
 		return nil, errors.New("No Points available.")
 	}
@@ -118,8 +122,8 @@ func (fp *FeatureBrick) FindSimilarDataPoint(pv *PosVector, method string) (*Dis
 	return nil, errors.New("Unknown method type")
 }
 
-func (fp *FeatureBrick) findSimilarDataPointWithNaive(pv *PosVector) (*DistanceComparingState, error) {
-	var ret DistanceComparingState
+func (fp *FeatureBrick) findSimilarDataPointWithNaive(pv *data.PosVector) (*calculation.DistanceComparingState, error) {
+	var ret calculation.DistanceComparingState
 	ret.SetCandidate(&fp.DataPoints[0], fp.DataPoints[0].GetDistance(pv))
 	for i := 1; i < fp.NumOfAvailablePoints; i++ {
 		ret.UpdateIfFindMinimum(&fp.DataPoints[i], pv)
@@ -127,8 +131,8 @@ func (fp *FeatureBrick) findSimilarDataPointWithNaive(pv *PosVector) (*DistanceC
 	return &ret, nil
 }
 
-func (fp *FeatureBrick) findSimilarDataPointWithGoRoutine(pv *PosVector, div int) (*DistanceComparingState, error) {
-	resc := make(chan DistanceComparingState)
+func (fp *FeatureBrick) findSimilarDataPointWithGoRoutine(pv *data.PosVector, div int) (*calculation.DistanceComparingState, error) {
+	resc := make(chan calculation.DistanceComparingState)
 	wg := sync.WaitGroup{}
 	// 計算範囲の分割と各GoRoutineの起動
 	for i := 0; i < div; i++ {
@@ -141,8 +145,8 @@ func (fp *FeatureBrick) findSimilarDataPointWithGoRoutine(pv *PosVector, div int
 			end = int(fp.NumOfAvailablePoints/div) * (i + 1)
 		}
 		wg.Add(1)
-		go func(start int, end int, resc chan DistanceComparingState) {
-			var tmp DistanceComparingState
+		go func(start int, end int, resc chan calculation.DistanceComparingState) {
+			var tmp calculation.DistanceComparingState
 			tmp.SetCandidate(&fp.DataPoints[start], fp.DataPoints[start].GetDistance(pv))
 			for j := start + 1; j < end; j++ {
 				tmp.UpdateIfFindMinimum(&fp.DataPoints[j], pv)

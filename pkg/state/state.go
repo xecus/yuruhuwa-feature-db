@@ -1,13 +1,16 @@
-package main
+package state
 
 import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
-	"github.com/weaveworks/mesh"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/abeja-inc/feature-search-db/pkg/brick"
+
+	"github.com/weaveworks/mesh"
 )
 
 type BrickInfo struct {
@@ -35,27 +38,27 @@ type StateContent struct {
 	NodeInfos map[string]NodeInfo
 }
 
-// state is an implementation of a G-counter.
-type state struct {
+// State is an implementation of a G-counter.
+type State struct {
 	mtx  sync.RWMutex
 	set  map[mesh.PeerName]StateContent
 	self mesh.PeerName
 }
 
-// state implements GossipData.
-var _ mesh.GossipData = &state{}
+// State implements GossipData.
+var _ mesh.GossipData = &State{}
 
-// Construct an empty state object, ready to receive updates.
+// Construct an empty State object, ready to receive updates.
 // This is suitable to use at program start.
 // Other peers will populate us with data.
-func newState(self mesh.PeerName) *state {
-	return &state{
+func newState(self mesh.PeerName) *State {
+	return &State{
 		set:  map[mesh.PeerName]StateContent{},
 		self: self,
 	}
 }
 
-func (st *state) getAllState() (result StateContent) {
+func (st *State) getAllState() (result StateContent) {
 	st.mtx.RLock()
 	defer st.mtx.RUnlock()
 	// NodeInfos
@@ -76,7 +79,7 @@ func (st *state) getAllState() (result StateContent) {
 	return result
 }
 
-func (st *state) del() (complete *state) {
+func (st *State) del() (complete *State) {
 	st.mtx.Lock()
 	defer st.mtx.Unlock()
 	if _, ok := st.set[st.self]; ok {
@@ -86,12 +89,12 @@ func (st *state) del() (complete *state) {
 			},
 		}
 	}
-	return &state{
+	return &State{
 		set: st.set,
 	}
 }
 
-func (st *state) setNodeInfo(cci *ClusterConfigInfo, bp *BrickPool) (complete *state) {
+func (st *State) setNodeInfo(peerConf PeerConfig, bp *brick.BrickPool) (complete *State) {
 	st.mtx.Lock()
 	defer st.mtx.Unlock()
 
@@ -116,8 +119,8 @@ func (st *state) setNodeInfo(cci *ClusterConfigInfo, bp *BrickPool) (complete *s
 				st.self.String(): NodeInfo{
 					Bricks:        &brickInfos,
 					Count:         c.Count + 1,
-					IpAddress:     fmt.Sprintf("%s", *cci.ipAddress),
-					ApiPort:       fmt.Sprintf("%s", *cci.featureApiHttpListen),
+					IpAddress:     fmt.Sprintf("%s", peerConf.ipAddress),
+					ApiPort:       fmt.Sprintf("%s", peerConf.featureApiHttpListen),
 					LaunchAt:      c.LaunchAt,
 					LastUpdatedAt: time.Now(),
 					//NodeName:      st.self.String(),
@@ -131,8 +134,8 @@ func (st *state) setNodeInfo(cci *ClusterConfigInfo, bp *BrickPool) (complete *s
 				st.self.String(): NodeInfo{
 					Bricks:        &brickInfos,
 					Count:         0,
-					IpAddress:     fmt.Sprintf("%s", *cci.ipAddress),
-					ApiPort:       fmt.Sprintf("%s", *cci.featureApiHttpListen),
+					IpAddress:     fmt.Sprintf("%s", peerConf.ipAddress),
+					ApiPort:       fmt.Sprintf("%s", peerConf.featureApiHttpListen),
 					LaunchAt:      time.Now(),
 					LastUpdatedAt: time.Now(),
 					//NodeName:      st.self.String(),
@@ -140,23 +143,23 @@ func (st *state) setNodeInfo(cci *ClusterConfigInfo, bp *BrickPool) (complete *s
 			},
 		}
 	}
-	return &state{
+	return &State{
 		set: st.set,
 	}
 }
 
-func (st *state) copy() *state {
+func (st *State) copy() *State {
 	st.mtx.RLock()
 	defer st.mtx.RUnlock()
-	return &state{
+	return &State{
 		set: st.set,
 	}
 }
 
-// Encode serializes our complete state to a slice of byte-slices.
+// Encode serializes our complete State to a slice of byte-slices.
 // In this simple example, we use a single gob-encoded
 // buffer: see https://golang.org/pkg/encoding/gob/
-func (st *state) Encode() [][]byte {
+func (st *State) Encode() [][]byte {
 	st.mtx.RLock()
 	defer st.mtx.RUnlock()
 	var buf bytes.Buffer
@@ -166,11 +169,11 @@ func (st *state) Encode() [][]byte {
 	return [][]byte{buf.Bytes()}
 }
 
-func (st *state) Merge(other mesh.GossipData) (complete mesh.GossipData) {
-	return st.mergeComplete(other.(*state).copy().set)
+func (st *State) Merge(other mesh.GossipData) (complete mesh.GossipData) {
+	return st.mergeComplete(other.(*State).copy().set)
 }
 
-func (st *state) mergeReceived(set map[mesh.PeerName]StateContent) (received mesh.GossipData) {
+func (st *State) mergeReceived(set map[mesh.PeerName]StateContent) (received mesh.GossipData) {
 	st.mtx.Lock()
 	defer st.mtx.Unlock()
 	log.Println("mergeReceived")
@@ -195,12 +198,12 @@ func (st *state) mergeReceived(set map[mesh.PeerName]StateContent) (received mes
 			st.set[peer].NodeInfos[nodeInfoKey] = nodeInfoVal
 		}
 	}
-	return &state{
+	return &State{
 		set: set, // all remaining elements were novel to us
 	}
 }
 
-func (st *state) mergeDelta(set map[mesh.PeerName]StateContent) (delta mesh.GossipData) {
+func (st *State) mergeDelta(set map[mesh.PeerName]StateContent) (delta mesh.GossipData) {
 	st.mtx.Lock()
 	defer st.mtx.Unlock()
 	log.Println("mergeDelta")
@@ -229,12 +232,12 @@ func (st *state) mergeDelta(set map[mesh.PeerName]StateContent) (delta mesh.Goss
 	if len(set) <= 0 {
 		return nil // per OnGossip requirements
 	}
-	return &state{
+	return &State{
 		set: set, // all remaining elements were novel to us
 	}
 }
 
-func (st *state) mergeComplete(set map[mesh.PeerName]StateContent) (complete mesh.GossipData) {
+func (st *State) mergeComplete(set map[mesh.PeerName]StateContent) (complete mesh.GossipData) {
 	st.mtx.Lock()
 	defer st.mtx.Unlock()
 	log.Println("mergeComplete")
@@ -255,7 +258,7 @@ func (st *state) mergeComplete(set map[mesh.PeerName]StateContent) (complete mes
 		}
 	}
 
-	return &state{
+	return &State{
 		set: st.set, // n.b. can't .copy() due to lock contention
 	}
 }

@@ -1,10 +1,9 @@
-package main
+package proxy
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorilla/mux"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -13,12 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/abeja-inc/feature-search-db/pkg/api"
+	"github.com/abeja-inc/feature-search-db/pkg/state"
+	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorilla/mux"
+
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
 // ---------------------- API for ReverseProxy -----------------------------
 
 type BrickInfoWithNodeInfo struct {
-	BrickInfo
+	state.BrickInfo
 	NodeName      string `json:"nodeName"`
 	NodeIpAddress string `json:"nodeIpAddress"`
 	NodeApiPort   int    `json:nodeApiPort`
@@ -60,7 +65,7 @@ type ProxyQueryResponse struct {
 	RequestProcessTime int64                        `json:"requestProcessTime"`
 }
 
-func handlerOfProxyStat(peer *peer) func(w http.ResponseWriter, r *http.Request) {
+func handlerOfProxyStat(peer *state.Peer) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		t_start := time.Now().UnixNano()
 		// Allow only POST Method
@@ -70,7 +75,7 @@ func handlerOfProxyStat(peer *peer) func(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		// Create NodeLists
-		status := peer.getAllState()
+		status := peer.GetAllState()
 		bricks := []BrickInfoWithNodeInfo{}
 		for nodeName, v := range status.NodeInfos {
 			for _, v2 := range *v.Bricks {
@@ -126,8 +131,12 @@ func handlerOfProxyStat(peer *peer) func(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request) {
+func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		span := tracer.StartSpan("handlerOfProxyQuery")
+		defer span.Finish()
+		span.SetTag("http.url", r.URL.Path)
+
 		t_start := time.Now().UnixNano()
 
 		// Allow only POST Method
@@ -167,7 +176,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		calcMode := string(CalcModeNaive)
+		calcMode := string(api.CalcModeNaive)
 		if _, ok := v["calcMode"]; ok {
 			calcMode = v["calcMode"][0]
 		}
@@ -195,7 +204,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 		}
 
 		// Create NodeLists
-		status := peer.getAllState()
+		status := peer.GetAllState()
 		bricks := []BrickInfoWithNodeInfo{}
 
 		var minBrick BrickInfoWithNodeInfo
@@ -242,11 +251,13 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 				brick.NodeApiPort,
 				values.Encode(),
 			)
+			child := tracer.StartSpan("callNodeApiFromProxy", tracer.ChildOf(span.Context()))
 			resp, err := http.Post(
 				address,
 				"application/json",
 				bytes.NewBuffer(querbyBytes),
 			)
+			child.Finish(tracer.WithError(err))
 			if err != nil {
 				ch <- map[string]NodeQueryResponse{
 					brick.NodeName: NodeQueryResponse{
@@ -340,7 +351,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func startReverseProxy(peer *peer, c *ClusterConfigInfo, errs chan error) {
+func StartReverseProxy(peer *state.Peer, httpListen string, errs chan error) {
 
 	logger := log.New(os.Stderr, "(Reverse API) > ", log.LstdFlags)
 
@@ -352,7 +363,7 @@ func startReverseProxy(peer *peer, c *ClusterConfigInfo, errs chan error) {
 	}
 
 	go func(errs chan error) {
-		logger.Printf("HTTP server starting (%s)\n", *c.featureApiHttpListen)
+		logger.Printf("HTTP server starting (%s)\n", httpListen)
 		r := httptrace.NewRouter(
 			httptrace.WithServiceName("ProyxyAPI"),
 		)
@@ -362,7 +373,6 @@ func startReverseProxy(peer *peer, c *ClusterConfigInfo, errs chan error) {
 		})
 		r.HandleFunc("/stat", handlerOfProxyStat(peer))
 		r.HandleFunc("/api/v1/searchQuery", handlerOfProxyQuery(peer))
-		errs <- http.ListenAndServe(*c.featureApiHttpListen, logRequest(r))
+		errs <- http.ListenAndServe(httpListen, logRequest(r))
 	}(errs)
-
 }

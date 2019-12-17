@@ -1,11 +1,9 @@
-package main
+package query
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/gorilla/mux"
-	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorilla/mux"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -13,9 +11,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/abeja-inc/feature-search-db/pkg/api"
+	"github.com/abeja-inc/feature-search-db/pkg/api/proxy"
+	"github.com/abeja-inc/feature-search-db/pkg/brick"
+	"github.com/abeja-inc/feature-search-db/pkg/cluster"
+	"github.com/abeja-inc/feature-search-db/pkg/data"
+	"github.com/abeja-inc/feature-search-db/pkg/state"
+
+	"github.com/gorilla/mux"
+	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorilla/mux"
 )
 
-func startFeatureDbServer(bp *BrickPool, c *ClusterConfigInfo, errs chan error) {
+func StartFeatureDbServer(bp *brick.BrickPool, c *cluster.ClusterConfigInfo, errs chan error) {
 	logger := log.New(os.Stderr, "(Feature API) > ", log.LstdFlags)
 	logRequest := func(handler http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +33,7 @@ func startFeatureDbServer(bp *BrickPool, c *ClusterConfigInfo, errs chan error) 
 	}
 	// Calcノードが提供するAPI群のエンドポイント定義
 	go func(errs chan error) {
-		logger.Printf("HTTP server starting (%s)\n", *c.featureApiHttpListen)
+		logger.Printf("HTTP server starting (%s)\n", *c.FeatureApiHttpListen)
 		r := httptrace.NewRouter(
 			httptrace.WithServiceName("QueryAPI"),
 		)
@@ -41,11 +49,11 @@ func startFeatureDbServer(bp *BrickPool, c *ClusterConfigInfo, errs chan error) 
 		r.HandleFunc("/api/v1/bricks/{uniqueID}/download", handlerOfDownloadingBrick(bp))
 		// 特徴量検索用エンドポイント
 		r.HandleFunc("/api/v1/searchQuery", handlerOfQueryAPI(bp))
-		errs <- http.ListenAndServe(*c.featureApiHttpListen, logRequest(r))
+		errs <- http.ListenAndServe(*c.FeatureApiHttpListen, logRequest(r))
 	}(errs)
 }
 
-func handlerOfDownloadingBrick(bp *BrickPool) http.HandlerFunc {
+func handlerOfDownloadingBrick(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -79,7 +87,7 @@ func handlerOfDownloadingBrick(bp *BrickPool) http.HandlerFunc {
 	}
 }
 
-func handlerOfDownloadingDataPoint(bp *BrickPool) http.HandlerFunc {
+func handlerOfDownloadingDataPoint(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -140,7 +148,7 @@ func handlerOfDownloadingDataPoint(bp *BrickPool) http.HandlerFunc {
 	}
 }
 
-func handlerOfDetailOfBrick(bp *BrickPool) http.HandlerFunc {
+func handlerOfDetailOfBrick(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -162,7 +170,7 @@ func handlerOfDetailOfBrick(bp *BrickPool) http.HandlerFunc {
 			return
 		}
 
-		resp := BrickInfo{
+		resp := state.BrickInfo{
 			UniqueID:             fb.GetUniqueIDstr(),
 			BrickID:              fb.GetBrickIDstr(),
 			FeatureGroupID:       fb.GetFeatureGroupIDint(),
@@ -175,7 +183,7 @@ func handlerOfDetailOfBrick(bp *BrickPool) http.HandlerFunc {
 	}
 }
 
-func handlerOfDataPoints(bp *BrickPool) http.HandlerFunc {
+func handlerOfDataPoints(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -217,7 +225,7 @@ func handlerOfDataPoints(bp *BrickPool) http.HandlerFunc {
 	}
 }
 
-func handlerOfBricks(bp *BrickPool) http.HandlerFunc {
+func handlerOfBricks(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -226,9 +234,9 @@ func handlerOfBricks(bp *BrickPool) http.HandlerFunc {
 		}
 
 		bricks, _ := bp.GetAllBricks()
-		resp := make([]BrickInfo, 0, len(bricks))
+		resp := make([]state.BrickInfo, 0, len(bricks))
 		for _, fb := range bricks {
-			resp = append(resp, BrickInfo{
+			resp = append(resp, state.BrickInfo{
 				UniqueID:             fb.GetUniqueIDstr(),
 				BrickID:              fb.GetBrickIDstr(),
 				FeatureGroupID:       fb.GetFeatureGroupIDint(),
@@ -242,8 +250,11 @@ func handlerOfBricks(bp *BrickPool) http.HandlerFunc {
 	}
 }
 
-func handlerOfQueryAPI(bp *BrickPool) http.HandlerFunc {
+func handlerOfQueryAPI(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		//span := tracer.StartSpan("db", tracer.ResourceName("POST /api/v1/searchQuery"))
+		//defer span.Finish()
+
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			w.Write([]byte("Invalid method"))
@@ -285,7 +296,7 @@ func handlerOfQueryAPI(bp *BrickPool) http.HandlerFunc {
 			w.Write(jsonBytes)
 			return
 		}
-		featureGroupID := BrickFeatureGroupID(featureGroupIDint)
+		featureGroupID := brick.BrickFeatureGroupID(featureGroupIDint)
 
 		onlyRegister := false
 		if _, ok := v["onlyRegister"]; ok {
@@ -300,13 +311,13 @@ func handlerOfQueryAPI(bp *BrickPool) http.HandlerFunc {
 			}
 		}
 
-		calcMode := string(CalcModeNaive)
+		calcMode := string(api.CalcModeNaive)
 		if _, ok := v["calcMode"]; ok {
 			calcMode = v["calcMode"][0]
 		}
 
 		// Parse payload from client
-		var queryInputForm QueryInputForm
+		var queryInputForm proxy.QueryInputForm
 		b, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			jsonBytes, _ := json.Marshal(struct {
@@ -326,7 +337,7 @@ func handlerOfQueryAPI(bp *BrickPool) http.HandlerFunc {
 			return
 		}
 
-		target := PosVector{}
+		target := data.PosVector{}
 		target.InitVector(false, 512)
 		target.LoadPositionFromArray(queryInputForm.Vals)
 		fps, _ := bp.GetBrickByGroupID(featureGroupID)

@@ -1,7 +1,9 @@
-package main
+package util
 
 import (
 	"errors"
+	"github.com/abeja-inc/feature-search-db/pkg/brick"
+	"github.com/abeja-inc/feature-search-db/pkg/data"
 	"log"
 	"math/rand"
 	"net"
@@ -20,7 +22,7 @@ func duringFunc(d time.Duration, f func(), flag *bool) {
 }
 
 // Brickを乱数で初期化する
-func insertRandomValuesIntoPool(fp *FeatureBrick, capacity int) error {
+func InsertRandomValuesIntoPool(fp *brick.FeatureBrick, capacity int) error {
 	ta := time.Now().UnixNano()
 	div := 1
 	wg := sync.WaitGroup{}
@@ -37,7 +39,7 @@ func insertRandomValuesIntoPool(fp *FeatureBrick, capacity int) error {
 		go func(start int, end int) {
 			log.Printf("start=%d end=%d", start, end)
 			for j := start; j < end; j++ {
-				a := PosVector{}
+				a := data.PosVector{}
 				a.InitVector(true, 512)
 				newDataPoint, _ := fp.AddNewDataPoint(&a)
 				newDataPoint.PosVector.LoadPosition(&a)
@@ -53,7 +55,7 @@ func insertRandomValuesIntoPool(fp *FeatureBrick, capacity int) error {
 }
 
 // IPアドレスの自動取得
-func getExternalIP() (string, error) {
+func GetExternalIP() (string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
