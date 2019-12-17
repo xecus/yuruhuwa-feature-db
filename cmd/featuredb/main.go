@@ -30,7 +30,6 @@ func processSignal(errs chan error) {
 }
 
 func main() {
-
 	ipAddress, err := util.GetExternalIP()
 	if err != nil {
 		fmt.Printf("Failed to get IPAddress")
@@ -50,14 +49,14 @@ func main() {
 		flag.String("password", "", "password (optional)"),
 		flag.String("channel", "default", "gossip channel name"),
 		cluster.ClusterPeers{},
-)
+	)
 	flag.Var(clusterConfigInfo.Peers, "peer", "initial peer (may be repeated)")
 	flag.Parse()
 
 	tracer.Start(
 		tracer.WithServiceName("feature-db-test"),
 		tracer.WithAnalytics(true),
-		)
+	)
 	defer tracer.Stop()
 
 	errs := make(chan error)

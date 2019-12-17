@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 	"github.com/abeja-inc/feature-search-db/pkg/api"
 	"github.com/abeja-inc/feature-search-db/pkg/api/proxy"
 	"github.com/abeja-inc/feature-search-db/pkg/brick"
@@ -252,8 +253,8 @@ func handlerOfBricks(bp *brick.BrickPool) http.HandlerFunc {
 
 func handlerOfQueryAPI(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		//span := tracer.StartSpan("db", tracer.ResourceName("POST /api/v1/searchQuery"))
-		//defer span.Finish()
+		span := tracer.StartSpan("handlerOfQueryAPI")
+		defer span.Finish()
 
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)

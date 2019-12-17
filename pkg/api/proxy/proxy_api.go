@@ -135,8 +135,10 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 	return func(w http.ResponseWriter, r *http.Request) {
 		span := tracer.StartSpan("handlerOfProxyQuery")
 		defer span.Finish()
+		var childSpan tracer.Span
 		span.SetTag("http.url", r.URL.Path)
 
+		childSpan = tracer.StartSpan("validationRequest", tracer.ChildOf(span.Context()))
 		t_start := time.Now().UnixNano()
 
 		// Allow only POST Method
@@ -191,7 +193,9 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 			w.Write(jsonBytes)
 			return
 		}
+		childSpan.Finish()
 
+		childSpan = tracer.StartSpan("requestBinding", tracer.ChildOf(span.Context()))
 		var queryInputForm QueryInputForm
 		err = json.Unmarshal(query, &queryInputForm)
 		if err != nil {
@@ -202,8 +206,10 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 			w.Write(jsonBytes)
 			return
 		}
+		childSpan.Finish()
 
 		// Create NodeLists
+		childSpan = tracer.StartSpan("createNodeLists", tracer.ChildOf(span.Context()))
 		status := peer.GetAllState()
 		bricks := []BrickInfoWithNodeInfo{}
 
@@ -231,8 +237,12 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 				}
 			}
 		}
+		log.Printf("bricks: %+V", bricks)
+		childSpan.Finish()
 
+		childSpan = tracer.StartSpan("marshalQueryInputForm", tracer.ChildOf(span.Context()))
 		querbyBytes, err := json.Marshal(queryInputForm)
+		childSpan.Finish()
 
 		// Access Each Node
 		processEachNode := func(ch chan map[string]NodeQueryResponse, brick BrickInfoWithNodeInfo, onlyRegister bool) {
@@ -251,14 +261,13 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 				brick.NodeApiPort,
 				values.Encode(),
 			)
-			child := tracer.StartSpan("callNodeApiFromProxy", tracer.ChildOf(span.Context()))
 			resp, err := http.Post(
 				address,
 				"application/json",
 				bytes.NewBuffer(querbyBytes),
 			)
-			child.Finish(tracer.WithError(err))
 			if err != nil {
+				fmt.Printf("error communicating query api\n")
 				ch <- map[string]NodeQueryResponse{
 					brick.NodeName: NodeQueryResponse{
 						Success: false,
@@ -297,6 +306,7 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 			}
 		}
 
+		childSpan = tracer.StartSpan("processEachNode", tracer.ChildOf(span.Context()))
 		ch := make(chan map[string]NodeQueryResponse)
 		for _, brick := range bricks {
 			go processEachNode(ch, brick, false)
@@ -322,6 +332,7 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 				recvCnt += 1
 			}
 		}
+		childSpan.Finish()
 
 		isNew := false
 		// TODO: Implement load distance parameter from outside
@@ -336,6 +347,7 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 
 		t_end := time.Now().UnixNano()
 
+		childSpan = tracer.StartSpan("marshalProxyQueryResponse", tracer.ChildOf(span.Context()))
 		jsonBytes, _ := json.Marshal(ProxyQueryResponse{
 			Bricks:       bricks,
 			NodeResponse: responses,
@@ -348,6 +360,7 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 		})
 		w.WriteHeader(http.StatusOK)
 		w.Write(jsonBytes)
+		childSpan.Finish()
 	}
 }
 

@@ -4,10 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"math/rand"
-	//"errors"
-	//"fmt"
 	"math"
+	"math/rand"
 	"strings"
 )
 
