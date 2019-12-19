@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -48,6 +49,7 @@ func main() {
 		flag.String("nickname", cluster.MustHostname(), "peer nickname"),
 		flag.String("password", "", "password (optional)"),
 		flag.String("channel", "default", "gossip channel name"),
+		flag.String("strategy", "naive", "search strategy"),
 		cluster.ClusterPeers{},
 	)
 	flag.Var(clusterConfigInfo.Peers, "peer", "initial peer (may be repeated)")
@@ -67,10 +69,29 @@ func main() {
 		runtime.GOMAXPROCS(cpus)
 		fmt.Printf("CPU=%d\n", cpus)
 
+		// TODO: Discuss about deciding strategy's timing
+		var strategy brick.SearchStrategy
+		switch p := *clusterConfigInfo.SearchStrategy; {
+		case p == "naive":
+			strategy = brick.NewLinerFindStrategy()
+			fmt.Println("search strategy: LinerFindStrategy")
+		case strings.HasPrefix(p, "goroutine_"):
+			strs := strings.Split(p, "_")
+			div, err := strconv.Atoi(strs[1])
+			if err != nil {
+				fmt.Println("failed parse goroutine num")
+				return
+			}
+			strategy = brick.NewLinerDividingFindStrategy(div)
+			fmt.Println("search strategy: LinerDividingFindStrategy")
+		default:
+			strategy = brick.NewLinerFindStrategy()
+			fmt.Println("search strategy: LinerFindStrategy")
+		}
+
 		fp := brick.NewBrick(*clusterConfigInfo.SizeOfInitBrick,
 			0,
-			//brick.NewLinerFindStrategy(), // TODO: to be changeable
-			brick.NewLinerDividingFindStrategy(2), // TODO: to be changeable
+			strategy,
 		)
 		brick.InsertRandomValuesIntoPool(&fp, *clusterConfigInfo.SizeOfInitBrick)
 

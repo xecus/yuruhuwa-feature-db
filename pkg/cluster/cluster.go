@@ -31,6 +31,7 @@ type ClusterConfigInfo struct {
 	nickname             *string
 	password             *string
 	channel              *string
+	SearchStrategy       *string
 	Peers                ClusterPeers
 }
 
@@ -45,6 +46,7 @@ func NewConfig(
 	nickname *string,
 	password *string,
 	channel *string,
+	searchStrategy *string,
 	peers ClusterPeers,
 ) ClusterConfigInfo {
 	return ClusterConfigInfo{
@@ -58,6 +60,7 @@ func NewConfig(
 		nickname:             nickname,
 		password:             password,
 		channel:              channel,
+		SearchStrategy:       searchStrategy,
 		Peers:                peers,
 	}
 }
