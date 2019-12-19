@@ -237,7 +237,6 @@ func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.R
 				}
 			}
 		}
-		log.Printf("bricks: %+V", bricks)
 		childSpan.Finish()
 
 		childSpan = tracer.StartSpan("marshalQueryInputForm", tracer.ChildOf(span.Context()))

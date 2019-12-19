@@ -53,25 +53,26 @@ func main() {
 	flag.Var(clusterConfigInfo.Peers, "peer", "initial peer (may be repeated)")
 	flag.Parse()
 
-	tracer.Start(
-		tracer.WithServiceName("feature-db-test"),
-		tracer.WithAnalytics(true),
-	)
-	defer tracer.Stop()
-
 	errs := make(chan error)
 	processSignal(errs)
 
 	// 計算ノードとして動くモード
 	if *clusterConfigInfo.NodeRole == "calc" {
-
+		tracer.Start(
+			tracer.WithServiceName("feature-db-calcNode"),
+			tracer.WithAnalytics(true),
+		)
+		defer tracer.Stop()
 		cpus := runtime.NumCPU()
 		runtime.GOMAXPROCS(cpus)
 		fmt.Printf("CPU=%d\n", cpus)
 
-		fp := brick.FeatureBrick{}
-		fp.InitBrick(*clusterConfigInfo.SizeOfInitBrick, 0)
-		util.InsertRandomValuesIntoPool(&fp, *clusterConfigInfo.SizeOfInitBrick)
+		fp := brick.NewBrick(*clusterConfigInfo.SizeOfInitBrick,
+			0,
+			//brick.NewLinerFindStrategy(), // TODO: to be changeable
+			brick.NewLinerDividingFindStrategy(2), // TODO: to be changeable
+		)
+		brick.InsertRandomValuesIntoPool(&fp, *clusterConfigInfo.SizeOfInitBrick)
 
 		bp := brick.BrickPool{}
 		bp.InitBrickPool()
@@ -92,6 +93,10 @@ func main() {
 
 	// ReverseProxyとして動くモード
 	if *clusterConfigInfo.NodeRole == "reverseProxy" {
+		tracer.Start(
+			tracer.WithServiceName("feature-db-proxy"),
+			tracer.WithAnalytics(true),
+		)
 		peer := cluster.StartClusteringFunc(clusterConfigInfo, errs)
 		proxy.StartReverseProxy(peer, *clusterConfigInfo.FeatureApiHttpListen, errs)
 		go func(peer cluster.PeerController) {

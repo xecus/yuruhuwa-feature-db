@@ -19,18 +19,21 @@ type PosVector struct {
 	Hash string
 }
 
-func (ps *PosVector) InitVector(useRandom bool, size int) error {
-	ps.Vals = make([]float64, size, size)
+func NewPosVector(useRandom bool, size int) PosVector {
+	vals := make([]float64, size, size)
 	if useRandom {
-		for i, _ := range ps.Vals {
-			ps.Vals[i] = generateRandomVal(-1.0, 1.0)
+		for i, _ := range vals {
+			vals[i] = generateRandomVal(-1.0, 1.0)
 		}
 	} else {
-		for i, _ := range ps.Vals {
-			ps.Vals[i] = 0.0
+		for i, _ := range vals {
+			vals[i] = 0.0
 		}
 	}
-	return nil
+	return PosVector{
+		Vals: vals,
+		Hash: "",
+	}
 }
 
 func (ps *PosVector) LoadPosition(pv *PosVector) error {

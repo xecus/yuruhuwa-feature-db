@@ -255,6 +255,7 @@ func handlerOfQueryAPI(bp *brick.BrickPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		span := tracer.StartSpan("handlerOfQueryAPI")
 		defer span.Finish()
+		var childSpan tracer.Span
 
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -338,8 +339,7 @@ func handlerOfQueryAPI(bp *brick.BrickPool) http.HandlerFunc {
 			return
 		}
 
-		target := data.PosVector{}
-		target.InitVector(false, 512)
+		target := data.NewPosVector(false, 512)
 		target.LoadPositionFromArray(queryInputForm.Vals)
 		fps, _ := bp.GetBrickByGroupID(featureGroupID)
 		if fps == nil {
@@ -352,10 +352,13 @@ func handlerOfQueryAPI(bp *brick.BrickPool) http.HandlerFunc {
 		}
 		fp := fps[0]
 
+		childSpan = tracer.StartSpan("registerOrFindOperation", tracer.ChildOf(span.Context()))
 		if onlyRegister {
+			childSpan2 := tracer.StartSpan("AddNewDataPoint", tracer.ChildOf(childSpan.Context()))
 			ta := time.Now().UnixNano()
 			datPoint, err := fp.AddNewDataPoint(&target)
 			tb := time.Now().UnixNano()
+			childSpan2.Finish()
 			elapsedTime := tb - ta
 			if err != nil {
 				jsonBytes, _ := json.Marshal(struct {
@@ -379,9 +382,16 @@ func handlerOfQueryAPI(bp *brick.BrickPool) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			w.Write(jsonBytes)
 		} else {
+			childSpan2 := tracer.StartSpan("FindSimilarDataPoint", tracer.ChildOf(childSpan.Context()))
+			rawParam := map[string]interface{}{ // TODO: refactor to strategic
+				"posVector": &target,
+				"numOfAvailablePoints": fp.NumOfAvailablePoints,
+			}
+			params := fp.CreateSearchParam(rawParam)
 			ta := time.Now().UnixNano()
-			ret, _ := fp.FindSimilarDataPoint(&target, calcMode)
+			ret := fp.Find(params)
 			tb := time.Now().UnixNano()
+			childSpan2.Finish()
 			elapsedTime := tb - ta
 			jsonBytes, _ := json.Marshal(struct {
 				DataID      string  `json:"dataID"`
@@ -399,5 +409,6 @@ func handlerOfQueryAPI(bp *brick.BrickPool) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			w.Write(jsonBytes)
 		}
+		childSpan.Finish()
 	}
 }
