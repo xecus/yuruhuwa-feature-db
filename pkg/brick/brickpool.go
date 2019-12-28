@@ -1,10 +1,18 @@
-package main
+package brick
 
 import (
 	"errors"
-	"github.com/rs/xid"
 	"sync"
+
+	"github.com/rs/xid"
 )
+
+type BrickPool struct {
+	mutex                        *sync.Mutex
+	UniqueIDRelationMapper       map[BrickID]*FeatureBrick
+	BrickIDRelationMapper        map[BrickID][]*FeatureBrick
+	FeatureGroupIDRelationMapper map[BrickFeatureGroupID][]*FeatureBrick
+}
 
 func (bp *BrickPool) InitBrickPool() error {
 	var mutex sync.Mutex

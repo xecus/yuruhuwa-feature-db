@@ -1,4 +1,4 @@
-package main
+package cluster
 
 import (
 	"encoding/json"
@@ -8,12 +8,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	//"time"
-	//"os/signal"
 	"sort"
 	"strconv"
 	"strings"
-	//"syscall"
+
+	"github.com/abeja-inc/feature-search-db/pkg/brick"
+	"github.com/abeja-inc/feature-search-db/pkg/state"
 
 	"github.com/weaveworks/mesh"
 )
@@ -21,34 +21,72 @@ import (
 type ClusterPeers map[string]struct{}
 
 type ClusterConfigInfo struct {
-	sizeOfInitBrick      *int
-	ipAddress            *string
-	featureApiHttpListen *string
-	nodeRole             *string
+	SizeOfInitBrick      *int
+	IpAddress            *string
+	FeatureApiHttpListen *string
+	NodeRole             *string
 	stateApiHttpListen   *string
 	meshListen           *string
 	hwaddr               *string
 	nickname             *string
 	password             *string
 	channel              *string
-	peers                ClusterPeers
+	SearchStrategy       *string
+	Peers                ClusterPeers
+}
+
+func NewConfig(
+	sizeOfInitBrick *int,
+	ipAddress *string,
+	featureApiHttpListen *string,
+	nodeRole *string,
+	stateApiHttpListen *string,
+	meshListen *string,
+	hwaddr *string,
+	nickname *string,
+	password *string,
+	channel *string,
+	searchStrategy *string,
+	peers ClusterPeers,
+) ClusterConfigInfo {
+	return ClusterConfigInfo{
+		SizeOfInitBrick:      sizeOfInitBrick,
+		IpAddress:            ipAddress,
+		FeatureApiHttpListen: featureApiHttpListen,
+		NodeRole:             nodeRole,
+		stateApiHttpListen:   stateApiHttpListen,
+		meshListen:           meshListen,
+		hwaddr:               hwaddr,
+		nickname:             nickname,
+		password:             password,
+		channel:              channel,
+		SearchStrategy:       searchStrategy,
+		Peers:                peers,
+	}
+}
+
+func (cci ClusterConfigInfo) StateConfig() state.PeerConfig {
+	return state.NewPeerConfig(
+		*cci.IpAddress,
+		*cci.FeatureApiHttpListen,
+	)
 }
 
 func (cci *ClusterConfigInfo) Show() {
-	fmt.Printf("nodeRole=%s\n", *cci.nodeRole)
-	fmt.Printf("featureApiHttpListen=%s\n", *cci.featureApiHttpListen)
+	fmt.Printf("nodeRole=%s\n", *cci.NodeRole)
+	fmt.Printf("FeatureApiHttpListen=%s\n", *cci.FeatureApiHttpListen)
 	fmt.Printf("stateApiHttpListen=%s\n", *cci.stateApiHttpListen)
 	fmt.Printf("meshListen=%s\n", *cci.meshListen)
 	fmt.Printf("hwaddr=%s\n", *cci.hwaddr)
 	fmt.Printf("nickname=%s\n", *cci.nickname)
 	fmt.Printf("password=%s\n", *cci.password)
 	fmt.Printf("channel=%s\n", *cci.channel)
-	for k, _ := range cci.peers {
+	for k, _ := range cci.Peers {
 		fmt.Printf("peers[%s]\n", k)
 	}
 }
 
-func startClusteringFunc(c ClusterConfigInfo, errs chan error) *peer {
+func StartClusteringFunc(c ClusterConfigInfo, errs chan error) *state.Peer {
 
 	logger := log.New(os.Stderr, "(Clustering) "+*c.nickname+"> ", log.LstdFlags)
 
@@ -80,12 +118,12 @@ func startClusteringFunc(c ClusterConfigInfo, errs chan error) *peer {
 		logger.Fatalf("Could not create router: %v", err)
 	}
 
-	peer := newPeer(name, logger)
+	peer := state.NewPeer(name, logger)
 	gossip, err := router.NewGossip(*c.channel, peer)
 	if err != nil {
 		logger.Fatalf("Could not create gossip: %v", err)
 	}
-	peer.register(gossip)
+	peer.Register(gossip)
 
 	func() {
 		logger.Printf("mesh router starting (%s)", *c.meshListen)
@@ -95,7 +133,7 @@ func startClusteringFunc(c ClusterConfigInfo, errs chan error) *peer {
 		logger.Printf("mesh router stopping")
 		router.Stop()
 	}()
-	router.ConnectionMaker.InitiateConnections(c.peers.slice(), true)
+	router.ConnectionMaker.InitiateConnections(c.Peers.slice(), true)
 
 	go func(errs chan error) {
 		logger.Printf("HTTP server starting (%s)", *c.stateApiHttpListen)
@@ -105,21 +143,21 @@ func startClusteringFunc(c ClusterConfigInfo, errs chan error) *peer {
 	return peer
 }
 
-type peerController interface {
-	getAllState() StateContent
-	setNodeInfo(cci *ClusterConfigInfo, bp *BrickPool) StateContent
-	del() StateContent
+type PeerController interface {
+	GetAllState() state.StateContent
+	SetNodeInfo(peerConfig state.PeerConfig, bp *brick.BrickPool) state.StateContent
+	Del() state.StateContent
 }
 
-func handlerOfClusterApiController(pc peerController) http.HandlerFunc {
+func handlerOfClusterApiController(pc PeerController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			bytes, _ := json.Marshal(pc.getAllState())
+			bytes, _ := json.Marshal(pc.GetAllState())
 			s := string(bytes)
 			fmt.Fprintf(w, s)
 		case http.MethodDelete:
-			bytes, _ := json.Marshal(pc.del())
+			bytes, _ := json.Marshal(pc.Del())
 			s := string(bytes)
 			fmt.Fprintf(w, s)
 		case http.MethodPost:
@@ -154,7 +192,7 @@ func (ss ClusterPeers) slice() []string {
 	return slice
 }
 
-func mustHardwareAddr() string {
+func MustHardwareAddr() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		panic(err)
@@ -167,7 +205,7 @@ func mustHardwareAddr() string {
 	panic("no valid network interfaces")
 }
 
-func mustHostname() string {
+func MustHostname() string {
 	hostname, err := os.Hostname()
 	if err != nil {
 		panic(err)

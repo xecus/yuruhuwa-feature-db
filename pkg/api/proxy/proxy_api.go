@@ -1,10 +1,9 @@
-package main
+package proxy
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorilla/mux"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -13,12 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/abeja-inc/feature-search-db/pkg/api"
+	"github.com/abeja-inc/feature-search-db/pkg/state"
+	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorilla/mux"
+
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
 // ---------------------- API for ReverseProxy -----------------------------
 
 type BrickInfoWithNodeInfo struct {
-	BrickInfo
+	state.BrickInfo
 	NodeName      string `json:"nodeName"`
 	NodeIpAddress string `json:"nodeIpAddress"`
 	NodeApiPort   int    `json:nodeApiPort`
@@ -60,7 +65,7 @@ type ProxyQueryResponse struct {
 	RequestProcessTime int64                        `json:"requestProcessTime"`
 }
 
-func handlerOfProxyStat(peer *peer) func(w http.ResponseWriter, r *http.Request) {
+func handlerOfProxyStat(peer *state.Peer) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		t_start := time.Now().UnixNano()
 		// Allow only POST Method
@@ -70,7 +75,7 @@ func handlerOfProxyStat(peer *peer) func(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		// Create NodeLists
-		status := peer.getAllState()
+		status := peer.GetAllState()
 		bricks := []BrickInfoWithNodeInfo{}
 		for nodeName, v := range status.NodeInfos {
 			for _, v2 := range *v.Bricks {
@@ -126,8 +131,14 @@ func handlerOfProxyStat(peer *peer) func(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request) {
+func handlerOfProxyQuery(peer *state.Peer) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		span := tracer.StartSpan("handlerOfProxyQuery")
+		defer span.Finish()
+		var childSpan tracer.Span
+		span.SetTag("http.url", r.URL.Path)
+
+		childSpan = tracer.StartSpan("validationRequest", tracer.ChildOf(span.Context()))
 		t_start := time.Now().UnixNano()
 
 		// Allow only POST Method
@@ -167,7 +178,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		calcMode := string(CalcModeNaive)
+		calcMode := string(api.CalcModeNaive)
 		if _, ok := v["calcMode"]; ok {
 			calcMode = v["calcMode"][0]
 		}
@@ -182,7 +193,9 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 			w.Write(jsonBytes)
 			return
 		}
+		childSpan.Finish()
 
+		childSpan = tracer.StartSpan("requestBinding", tracer.ChildOf(span.Context()))
 		var queryInputForm QueryInputForm
 		err = json.Unmarshal(query, &queryInputForm)
 		if err != nil {
@@ -193,9 +206,11 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 			w.Write(jsonBytes)
 			return
 		}
+		childSpan.Finish()
 
 		// Create NodeLists
-		status := peer.getAllState()
+		childSpan = tracer.StartSpan("createNodeLists", tracer.ChildOf(span.Context()))
+		status := peer.GetAllState()
 		bricks := []BrickInfoWithNodeInfo{}
 
 		var minBrick BrickInfoWithNodeInfo
@@ -222,8 +237,11 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 				}
 			}
 		}
+		childSpan.Finish()
 
+		childSpan = tracer.StartSpan("marshalQueryInputForm", tracer.ChildOf(span.Context()))
 		querbyBytes, err := json.Marshal(queryInputForm)
+		childSpan.Finish()
 
 		// Access Each Node
 		processEachNode := func(ch chan map[string]NodeQueryResponse, brick BrickInfoWithNodeInfo, onlyRegister bool) {
@@ -248,6 +266,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 				bytes.NewBuffer(querbyBytes),
 			)
 			if err != nil {
+				fmt.Printf("error communicating query api\n")
 				ch <- map[string]NodeQueryResponse{
 					brick.NodeName: NodeQueryResponse{
 						Success: false,
@@ -286,6 +305,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 			}
 		}
 
+		childSpan = tracer.StartSpan("processEachNode", tracer.ChildOf(span.Context()))
 		ch := make(chan map[string]NodeQueryResponse)
 		for _, brick := range bricks {
 			go processEachNode(ch, brick, false)
@@ -311,6 +331,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 				recvCnt += 1
 			}
 		}
+		childSpan.Finish()
 
 		isNew := false
 		// TODO: Implement load distance parameter from outside
@@ -325,6 +346,7 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 
 		t_end := time.Now().UnixNano()
 
+		childSpan = tracer.StartSpan("marshalProxyQueryResponse", tracer.ChildOf(span.Context()))
 		jsonBytes, _ := json.Marshal(ProxyQueryResponse{
 			Bricks:       bricks,
 			NodeResponse: responses,
@@ -337,10 +359,11 @@ func handlerOfProxyQuery(peer *peer) func(w http.ResponseWriter, r *http.Request
 		})
 		w.WriteHeader(http.StatusOK)
 		w.Write(jsonBytes)
+		childSpan.Finish()
 	}
 }
 
-func startReverseProxy(peer *peer, c *ClusterConfigInfo, errs chan error) {
+func StartReverseProxy(peer *state.Peer, httpListen string, errs chan error) {
 
 	logger := log.New(os.Stderr, "(Reverse API) > ", log.LstdFlags)
 
@@ -352,7 +375,7 @@ func startReverseProxy(peer *peer, c *ClusterConfigInfo, errs chan error) {
 	}
 
 	go func(errs chan error) {
-		logger.Printf("HTTP server starting (%s)\n", *c.featureApiHttpListen)
+		logger.Printf("HTTP server starting (%s)\n", httpListen)
 		r := httptrace.NewRouter(
 			httptrace.WithServiceName("ProyxyAPI"),
 		)
@@ -362,7 +385,6 @@ func startReverseProxy(peer *peer, c *ClusterConfigInfo, errs chan error) {
 		})
 		r.HandleFunc("/stat", handlerOfProxyStat(peer))
 		r.HandleFunc("/api/v1/searchQuery", handlerOfProxyQuery(peer))
-		errs <- http.ListenAndServe(*c.featureApiHttpListen, logRequest(r))
+		errs <- http.ListenAndServe(httpListen, logRequest(r))
 	}(errs)
-
 }
